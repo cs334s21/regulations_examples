@@ -1,6 +1,7 @@
 import requests
 import query_options
 import dotenv, os, sys
+import time
 from bs4 import BeautifulSoup
 from date_formatting import  clean_date, to_eastern_time
 
@@ -16,7 +17,9 @@ def get_key():
     dotenv.load_dotenv()
     return os.getenv('API_TOKEN')
 
-
+def get_umf():
+    """return upper most folder"""
+    return "regulation_database_items_ids"
 
 """helper functions to list child objects using a parentItemId"""
 
@@ -34,11 +37,11 @@ def write_all_items_in_parentItem_to_a_file(output, url, params):
     total_elements = get_total_elements_in_parentItem(url, params)
     try:
         with open(output, 'w') as writer:
-            while(total_elements >= 0):
-                print("items left to write: " + str(total_elements))
+            while(total_elements > 0):
+                print(f"{url[31:]} left to write: {total_elements}")
                 for page in range(1, 21):
                         query_options.update_page(page, params)
-                        r = request_from_reg_api(url, params)
+                        r = request_but_sleep_if_429(url, params)
                         r.raise_for_status()
                         write_page_of_items_to_file( r, writer, params)
                 update_next_lastModifiedDate(url, params)
@@ -59,8 +62,8 @@ def write_all_itemsIDs_in_parentItem_to_file(output, url, params):
     total_elements = get_total_elements_in_parentItem(url, params)
     try:
         with open(output, 'w') as writer:
-            while(total_elements >= 0):
-                print("items left to write: " + str(total_elements))
+            while(total_elements > 0):
+                print(f"{url[31:]} left to write: {total_elements}")
                 for page in range(1, 21):
                     items = get_items(url, page, params)
                     write_page_of_ids_to_file(items, writer)
@@ -87,8 +90,8 @@ def write_all_objectsIDs_in_parentItem_to_file(output, url, params):
 
 def write_all_objectsIDs_to_file(total_elements, output, url, params):
     with open(output, 'w') as writer:
-        while(total_elements >= 0):
-            print("items left to write: " + str(total_elements))
+        while(total_elements > 0):
+            print(f"{url[31:]} left to write: {total_elements}")
             write_20_pages_of_objectsIDs_to_file(url, writer, params)
             total_elements -= 5000
 
@@ -104,9 +107,19 @@ def write_20_pages_of_objectsIDs_to_file(url, writer, params):
 
 def get_items(url, page, params):
     query_options.update_page(page, params)
-    r = request_from_reg_api(url, params)
-    r.raise_for_status()
+    r = request_but_sleep_if_429(url, params)
     return r.json()
+
+def request_but_sleep_if_429(url, params):
+    r = request_from_reg_api(url, params)
+    if r.status_code == 429:
+        print("Finished with 1000 calls")
+        print("I gonna nap an hour. bye, bye")
+        time.sleep(3600)
+        print("Hey, I am back to work!!")
+        r = request_from_reg_api(url, params)
+    r.raise_for_status()
+    return r
 
 def request_from_reg_api(end_point, params):
     return requests.get(end_point, params=params)
@@ -117,12 +130,12 @@ def get_total_elements_in_parentItem(url, params):
     ex. params dict contains filter["documentId"]:value 
     when querying for comments.
     """
-    results = requests.get(url, params=params)
+    results = request_but_sleep_if_429(url, params=params)
     results.raise_for_status()
     return int(results.json()['meta']['totalElements'])
 
 def update_next_lastModifiedDate(url, params):
-    r = request_from_reg_api(url, params)
+    r = request_but_sleep_if_429(url, params)
     r.raise_for_status()
     params["filter[lastModifiedDate][ge]"] =\
     to_eastern_time(clean_date(get_next_lastModifiedDate(r)))
@@ -162,15 +175,15 @@ def write_all_agencies_ids_to_file(key):
 
 def get_agencies_from_docket_meta_data(key, url, params):
     query_options.add_key_to_params(key, params)
-    result = requests.get(url, params=params)
+    result = request_but_sleep_if_429(url, params=params)
     result.raise_for_status()
     return result.json()
 
 def write_agencies_to_file(data):
     agencies = data['meta']['aggregations']['agencyId']
-    with open('all_agencies_IDs', 'w') as w:
+    with open(f'{get_umf()}/all_agencies_ids.txt', 'w') as w:
         for agency in agencies:
-            w.write(agency['value'] +"\n")
+            w.write(f"{agency['value']}\n")
 
 
 """docket functions"""
@@ -178,14 +191,14 @@ def write_agencies_to_file(data):
 def docket_url():
     return 'https://api.regulations.gov/v4/dockets'
 
-def write_all_dockets_in_agency_to_file(key, agency_id=None):
+def write_all_dockets_in_agency_to_file(key, agency_dir, agency_id=None):
     agencyID, params = get_agencyID_and_params(key, agency_id)
-    output = f"dockets_in_{agencyID}.txt"
+    output = f"{agency_dir}/{agency_id}/docketsIDs_in_{agencyID}.txt"
     write_all_items_in_parentItem_to_a_file(output, docket_url(), params)
 
-def write_all_docketsIDs_in_agency_to_file(key, agency_id=None):
+def write_all_docketsIDs_in_agency_to_file(key, agency_dir, agency_id=None):
     agencyID, params = get_agencyID_and_params(key, agency_id)
-    output = f"docketsIDs_in_{agencyID}.txt"
+    output = f"{agency_dir}/docketsIDs_in_{agencyID}.txt"
     write_all_itemsIDs_in_parentItem_to_file(output, docket_url(), params)
 
 def get_agencyID_and_params(key, agency_id):
@@ -202,7 +215,7 @@ def get_docket_details(key, docket_id):
     params = {}
     query_options.add_key_to_params(key, params)
     docket_location = f"{docket_url()}/{docket_id}"
-    result = requests.get(docket_location, params=params)
+    result = request_but_sleep_if_429(docket_location, params=params)
     result.raise_for_status()
     return result.json()
 
@@ -218,17 +231,19 @@ def document_url():
     return 'https://api.regulations.gov/v4/documents'
 
 
-def write_all_documents_in_docket_to_file(key, docket_id=None):
+def write_all_documents_in_docket_to_file(key, output, docket_id=None):
 
     docketID, params = get_docketID_and_params(key, docket_id)
-    output = f"documents_in_{docketID}.txt"
+    output = f"{output}/documents_in_{docketID}.txt"
     write_all_items_in_parentItem_to_a_file(output, document_url(), params)
 
-def write_all_documentsIDs_in_docket_to_file(key, docket_id=None):
+def write_all_documentsIDs_in_docket_to_file(key, output, docket_id=None):
 
     docketID, params = get_docketID_and_params(key, docket_id)
-    output = f"documentsIDs_in_{docketID}.txt"
-    write_all_objectsIDs_in_parentItem_to_file(output, document_url(), params)
+    output1 = f"{output}/documentsIDs_in_{docketID}.txt"
+    write_all_itemsIDs_in_parentItem_to_file(output1, document_url(), params)
+    output2 = f"{output}/documentsObjectIDs_in_{docketID}.txt"
+    write_all_objectsIDs_in_parentItem_to_file(output2, document_url(), params)
 
 def get_docketID_and_params(key, docket_id):
     docketID = set_parent_ID(docket_id)
@@ -244,7 +259,7 @@ def get_document_details(key, document_id):
     params = {}
     query_options.add_key_to_params(key, params)
     document_location = f"{document_url()}/{document_id}"
-    result = requests.get(document_location, params=params)
+    result = request_but_sleep_if_429(document_location, params=params)
     result.raise_for_status()
     return result.json()
 
@@ -258,14 +273,14 @@ def get_documents(key, document_ids, results):
 def comment_url():
     return 'https://api.regulations.gov/v4/comments'
 
-def write_all_comments_in_document_to_file(key, document_id=None):
+def write_all_comments_in_document_to_file(key, document_dir, document_id=None):
     documentID, params = get_documentID_and_params(key, document_id)
-    output = f"comments_in_{documentID}.txt"
+    output = f"{document_dir}/comments_in_{documentID}.txt"
     write_all_items_in_parentItem_to_a_file(output, comment_url(), params)
 
-def write_all_commentsIDs_in_document_to_file(key, document_id=None):
+def write_all_commentsIDs_in_document_to_file(key, document_dir, document_id=None):
     documentID, params = get_documentID_and_params(key, document_id)
-    output = f"commentsIDs_in_{documentID}.txt"
+    output = f"{document_dir}/commentsIDs_in_{documentID}.txt"
     write_all_itemsIDs_in_parentItem_to_file(output, comment_url(), params)
 
 def get_documentID_and_params(key, document_id):
@@ -282,7 +297,7 @@ def get_comment_details(key, comment_id):
     params = {}
     query_options.add_key_to_params(key, params)
     comment_location = f"{comment_url()}/{comment_id}"
-    result = requests.get(comment_location, params=params)
+    result = request_but_sleep_if_429(comment_location, params=params)
     result.raise_for_status()
     return result.json()
 
